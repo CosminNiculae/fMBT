@@ -20,6 +20,8 @@ This library implements fmbt GUITestInterface for X.
 
 import fmbtgti
 import ctypes
+import os
+from wand.image import Image
 
 class Screen(fmbtgti.GUITestInterface):
     def __init__(self):
@@ -35,8 +37,39 @@ class X11Connection(fmbtgti.GUITestConnection):
         self.X_False = ctypes.c_int(0)
         self.X_CurrentTime = ctypes.c_ulong(0)
         self.NULL = ctypes.c_char_p(0)
-        self.current_screen = ctypes.c_int(-1)
+        self.X_ZPixmap = ctypes.c_int(2)
         self.display = ctypes.c_void_p(self.libX11.XOpenDisplay(self.NULL))
+
+        # Variables needed in order to invoke the XGetGeometry function
+        self.current_screen = self.libX11.XDefaultScreen(self.display)
+        self.root_window = self.libX11.XRootWindow(self.display, self.current_screen)
+        self.ref = ctypes.byref
+        self.__rw = ctypes.c_uint(0)
+        self.__x = ctypes.c_int(0)
+        self.__y = ctypes.c_int(0)
+        self.root_width = ctypes.c_uint(0)
+        self.root_height = ctypes.c_uint(0)
+        self.__bwidth = ctypes.c_uint(0)
+        self.root_depth = ctypes.c_uint(0)
+        
+        # Return the root window and the current geometry of the drawable.	
+        self.libX11.XGetGeometry(self.display, self.root_window, self.ref(self.__rw), self.ref(self.__x), self.ref(self.__y), self.ref(self.root_width), self.ref(self.root_height), self.ref(self.__bwidth), self.ref(self.root_depth))
+
+        class XImage(ctypes.Structure):
+            _fields_ = [
+                ('width'            , ctypes.c_int),
+                ('height'           , ctypes.c_int),
+                ('xoffset'          , ctypes.c_int),
+                ('format'           , ctypes.c_int),
+                ('data'             , ctypes.c_void_p),
+                ('byte_order'       , ctypes.c_int),
+                ('bitmap_unit'      , ctypes.c_int),
+                ('bitmap_bit_order' , ctypes.c_int),
+                ('bitmap_pad'       , ctypes.c_int),
+                ('depth'            , ctypes.c_int),
+                ('bytes_per_line'   , ctypes.c_int),
+                ('bits_per_pixel'   , ctypes.c_int)]
+        self.libX11.XGetImage.restype = ctypes.POINTER(XImage)
 
     def __del__(self):
         self.libX11.XCloseDisplay(self.display)
@@ -107,9 +140,17 @@ class X11Connection(fmbtgti.GUITestConnection):
         return True
 
     def recvScreenshot(self, filename):
-        # This is a hack to get this stack quickly testable,
-        # let's replace this with Xlib/libMagick functions, too...
-        import commands
-        commands.getstatusoutput("xwd -root -out '%s.xwd'" % (filename,))
-        commands.getstatusoutput("convert '%s.xwd' '%s'" % (filename, filename))
+        # Get the screenshot
+        shot_p = self.libX11.XGetImage(self.display, self.root_window, 0, 0, self.root_width, self.root_height, self.libX11.XAllPlanes(), self.X_ZPixmap)
+        shot = shot_p[0]
+
+        # Create a string representation of the image residing in memory and convert it to RGB format
+        data = ctypes.string_at(shot.data, shot.height * shot.bytes_per_line)
+        fmbtgti.eye4graphics.bgrx2rgb(data, shot.width, shot.height)
+
+        # Create a PPM header and then convert to PNG
+        ppm_header = "P6\n%d %d\n%d\n" % (shot.width, shot.height, 255)
+        Image(blob=ppm_header+data).save(filename=filename+".png")
+
+        self.libX11.XDestroyImage(shot_p)
         return True
